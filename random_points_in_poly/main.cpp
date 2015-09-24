@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-static const double COORDINATE_PRECISION = 10000000.;
+static const double COORDINATE_PRECISION = 10000000000000.;
 
 using namespace ClipperLib;
 using namespace p2t;
@@ -42,19 +42,124 @@ void print_triangle(vector<Triangle*> triangles)
     }
 }
 
-int main(int argc, char ** argv)
+int simple_polygon(string shp_file, int id)
 {
-    //random_points_in_triangle(110., 35., 120., 35., 115., 40., 10000, "out.csv");
-
-    string adm_shp = "/download/china_adm/china_adm_1.shp";
-    int		nShapeType, nEntities, i, iPart, nInvalidCount=0;
+    int		nShapeType, nEntities;
     double 	adfMinBound[4], adfMaxBound[4];
 
-    SHPHandle	hSHP = SHPOpen( adm_shp.c_str(), "rb" );
+    SHPHandle	hSHP = SHPOpen( shp_file.c_str(), "r+b" );
 
     if( hSHP == NULL )
     {
-        printf( "Unable to open:%s\n", adm_shp.c_str() );
+        printf( "Unable to open:%s\n", shp_file.c_str() );
+        exit( 1 );
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Print out the file bounds.                                      */
+/* -------------------------------------------------------------------- */
+    SHPGetInfo( hSHP, &nEntities, &nShapeType, adfMinBound, adfMaxBound );
+
+    SHPObject	*psShape = SHPReadObject( hSHP, id );
+
+    if( psShape == NULL )
+    {
+        fprintf( stderr,
+                 "Unable to read shape %d, terminating object reading.\n",
+                id );
+        return 0;
+    }
+
+    int new_nVertices = 0;
+    Paths all_paths;
+    for (int iPart = 0; iPart < psShape->nParts; iPart++)
+    {
+        // 1. simplify polygon using clipper
+        Path path;
+        Paths out_paths;
+        int start = psShape->panPartStart[iPart];
+        int end = psShape->nVertices;
+        if (iPart < psShape->nParts - 1)
+            end = psShape->panPartStart[iPart + 1];
+
+        for (int j = start; j < end; j++)
+        {
+            cInt x = cInt(psShape->padfX[j]*COORDINATE_PRECISION);
+            cInt y = cInt(psShape->padfY[j]*COORDINATE_PRECISION);
+            path.push_back(IntPoint(x, y));
+        }
+        SimplifyPolygon(path, out_paths);
+        if(out_paths.size() > 1)
+        {
+
+            for(auto it = out_paths.begin(); it != out_paths.end(); ++it)
+            {
+                all_paths.push_back(*it);
+                new_nVertices += it->size();
+            }
+        }
+        else
+        {
+            all_paths.push_back(path);
+            new_nVertices += path.size();
+        }
+    }
+
+    int nPanPartType = psShape->panPartType[0];
+    int new_nParts = all_paths.size();
+    int * new_panPartStart = (int *) malloc (sizeof(int)*new_nParts);
+    int * new_panPartType = (int *) malloc (sizeof(int)*new_nParts);
+    double * new_padfX = (double *) malloc (sizeof(double)*new_nVertices);
+    double * new_padfY = (double *) malloc (sizeof(double)*new_nVertices);
+
+    new_panPartStart[0] = 0;
+    new_panPartType[0] = 0;
+    for(int i = 0; i < new_nParts-1; ++i)
+    {
+        new_panPartType[i+1] = nPanPartType;
+        new_panPartStart[i+1] = new_panPartStart[i] + all_paths[i].size();
+    }
+    for (int i = 0; i < new_nParts; ++i)
+    {
+        for (int j = 0; j < all_paths[i].size(); ++j)
+        {
+            new_padfX[new_panPartStart[i] + j] = double(all_paths[i][j].X)/COORDINATE_PRECISION;
+            new_padfY[new_panPartStart[i] + j] = double(all_paths[i][j].Y)/COORDINATE_PRECISION;
+        }
+    }
+
+    SHPObject *newShape = SHPCreateObject( nShapeType, id, new_nParts,
+                                           new_panPartStart, new_panPartType,
+                                           new_nVertices,
+                                           new_padfX, new_padfY, NULL, NULL);
+    SHPWriteObject(hSHP, id, newShape);
+
+    // destroy shapeobj
+    SHPDestroyObject( psShape );
+    SHPDestroyObject( newShape );
+
+    SHPClose( hSHP );
+
+    free( new_panPartStart );
+    free( new_panPartType );
+    free( new_padfX );
+    free( new_padfY );
+    return 0;
+}
+
+int export_polygon_triangles(string shp_file)
+{
+
+    //random_points_in_triangle(110., 35., 120., 35., 115., 40., 10000, "out.csv");
+
+    int		nShapeType, nEntities, i, iPart, nInvalidCount=0;
+    double 	adfMinBound[4], adfMaxBound[4];
+
+    SHPHandle	hSHP = SHPOpen( shp_file.c_str(), "rb" );
+
+    if( hSHP == NULL )
+    {
+        printf( "Unable to open:%s\n", shp_file.c_str() );
         exit( 1 );
     }
 
@@ -169,7 +274,7 @@ int main(int argc, char ** argv)
                     CDT* cdt = new CDT(polyline);
                     cdt->Triangulate();
                     vector<Triangle*> triangles = cdt->GetTriangles();
-                    print_triangle(triangles);
+                    //print_triangle(triangles);
 
                     // claculate area
                     for (auto it = triangles.begin(); it != triangles.end(); ++it)
@@ -194,18 +299,6 @@ int main(int argc, char ** argv)
                 }
             }
 
-//            vector<Point*> polyline;
-//            if(start < end - 2)
-//            {
-//                // skip the last point
-//                for( j = start; j < end - 1; j++ )
-//                {
-//                    double x = psShape->padfX[j]*COORDINATE_PRECISION;
-//                    double y = psShape->padfY[j]*COORDINATE_PRECISION;
-//                    polyline.push_back(new Point(x, y));
-//                }
-//            }
-
         }
 
         cout << "  ]" << endl;
@@ -218,10 +311,22 @@ int main(int argc, char ** argv)
         output.close();
         std::cout.rdbuf(coutBuf);
 
+        // destroy shapeobj
         SHPDestroyObject( psShape );
     }
 
     SHPClose( hSHP );
 
+    return 0;
+}
+
+
+int main()
+{
+//    simple_polygon("/download/china_vector/china_adm_1.shp", 14);
+//    simple_polygon("/download/china_vector/china_adm_2.shp", 144);
+//    simple_polygon("/download/china_vector/china_adm_3.shp", 1033);
+    simple_polygon("/download/china_vector/world_adm.shp", 131);
+    cout << "process ok" << endl;
     return 0;
 }
